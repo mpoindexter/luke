@@ -2,20 +2,19 @@ package org.getopt.luke;
 
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.Date;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 
 import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.Fields;
-import org.apache.lucene.index.FieldsEnum;
 import org.apache.lucene.index.IndexGate;
+import org.apache.lucene.index.IndexGate.FormatDetails;
 import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.index.MultiFields;
 import org.apache.lucene.index.Terms;
 import org.apache.lucene.index.TermsEnum;
-import org.apache.lucene.index.IndexGate.FormatDetails;
 import org.apache.lucene.store.Directory;
 
 public class IndexInfo {
@@ -58,13 +57,13 @@ public class IndexInfo {
     termCounts = new HashMap<String,FieldTermCount>();
     numTerms = 0;
     Fields fields = MultiFields.getFields(reader);
-    FieldsEnum fe = fields.iterator();
+    Iterator<String> fe = fields.iterator();
     String fld = null;
     TermsEnum te = null;
     while ((fld = fe.next()) != null) {
       FieldTermCount ftc = new FieldTermCount();
       ftc.fieldname = fld;
-      Terms terms = fe.terms();
+      Terms terms = fields.terms(fld);
       if (terms != null) { // count terms
         te = terms.iterator(te);
         while (te.next() != null) {

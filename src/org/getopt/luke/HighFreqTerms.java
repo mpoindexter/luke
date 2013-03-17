@@ -17,24 +17,23 @@ package org.getopt.luke;
  * limitations under the License.
  */
 
-import org.apache.lucene.index.DirectoryReader;
-import org.apache.lucene.index.IndexReader;
-import org.apache.lucene.index.MultiFields;
-import org.apache.lucene.index.Fields;
-import org.apache.lucene.index.TermsEnum;
-import org.apache.lucene.index.FieldsEnum;
-import org.apache.lucene.index.Terms;
-import org.apache.lucene.index.DocsEnum;
-import org.apache.lucene.store.FSDirectory;
-import org.apache.lucene.util.PriorityQueue;
-import org.apache.lucene.util.BytesRef;
-import org.apache.lucene.util.Bits;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-
 import java.io.File;
 import java.util.Arrays;
 import java.util.Comparator;
+import java.util.Iterator;
+
+import org.apache.lucene.index.DirectoryReader;
+import org.apache.lucene.index.Fields;
+import org.apache.lucene.index.IndexReader;
+import org.apache.lucene.index.MultiFields;
+import org.apache.lucene.index.Terms;
+import org.apache.lucene.index.TermsEnum;
+import org.apache.lucene.store.FSDirectory;
+import org.apache.lucene.util.Bits;
+import org.apache.lucene.util.BytesRef;
+import org.apache.lucene.util.PriorityQueue;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * <b>NOTE: this is a temporary copy of contrib/misc from Lucene - 
@@ -140,11 +139,11 @@ public class HighFreqTerms {
         return EMPTY_STATS;
       }
       tiq = new TermStatsQueue(numTerms);
-      FieldsEnum fieldsEnum = fields.iterator();
+      Iterator<String> fieldsEnum = fields.iterator();
       while (true) {
         String field = fieldsEnum.next();
         if (field != null) {
-          Terms terms = fieldsEnum.terms();
+          Terms terms = fields.terms(field);
           te = terms.iterator(te);
           fillQueue(te, tiq, field);
         } else {
