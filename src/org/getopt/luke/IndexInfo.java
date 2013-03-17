@@ -60,7 +60,8 @@ public class IndexInfo {
     Iterator<String> fe = fields.iterator();
     String fld = null;
     TermsEnum te = null;
-    while ((fld = fe.next()) != null) {
+    while (fe.hasNext()) {
+      fld = fe.next();
       FieldTermCount ftc = new FieldTermCount();
       ftc.fieldname = fld;
       Terms terms = fields.terms(fld);

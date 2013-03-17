@@ -140,15 +140,11 @@ public class HighFreqTerms {
       }
       tiq = new TermStatsQueue(numTerms);
       Iterator<String> fieldsEnum = fields.iterator();
-      while (true) {
+      while (fieldsEnum.hasNext()) {
         String field = fieldsEnum.next();
-        if (field != null) {
-          Terms terms = fields.terms(field);
-          te = terms.iterator(te);
-          fillQueue(te, tiq, field);
-        } else {
-          break;
-        }
+        Terms terms = fields.terms(field);
+        te = terms.iterator(te);
+        fillQueue(te, tiq, field);
       }
     }
     
