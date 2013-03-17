@@ -6,8 +6,10 @@ import org.apache.lucene.analysis.tokenattributes.OffsetAttribute;
 import org.apache.lucene.document.Document;
 import org.apache.lucene.document.Field;
 import org.apache.lucene.index.*;
+import org.apache.lucene.index.FieldInfo.DocValuesType;
 import org.apache.lucene.util.Bits;
 import org.apache.lucene.util.BytesRef;
+import org.apache.lucene.util.NumericUtils;
 
 /**
  * This class attempts to reconstruct all fields from a document
@@ -66,8 +68,8 @@ public class DocReconstructor extends Observable {
       Fields fields = MultiFields.getFields(reader);
       numTerms = 0;
       Iterator<String> fe = fields.iterator();
-      String fld = null;
-      while ((fld = fe.next()) != null) {
+      while (fe.hasNext()) {
+        String fld = fe.next();
         Terms t = fields.terms(fld);
         TermsEnum te = t.iterator(null);
         while (te.next() != null) {
@@ -91,6 +93,10 @@ public class DocReconstructor extends Observable {
     if (docNum < 0 || docNum > reader.maxDoc()) {
       throw new Exception("Document number outside of valid range.");
     }
+    
+    // collect values from unstored fields
+    HashSet<String> uncollectedFields = new LinkedHashSet<String>(Arrays.asList(fieldNames));
+    
     Reconstructed res = new Reconstructed();
     if (live != null && !live.get(docNum)) {
       throw new Exception("Document is deleted.");
@@ -100,47 +106,93 @@ public class DocReconstructor extends Observable {
         IndexableField[] fs = doc.getFields(fieldNames[i]);
         if (fs != null && fs.length > 0) {
           res.getStoredFields().put(fieldNames[i], fs);
+          uncollectedFields.remove(fieldNames[i]);
         }
       }
     }
-    // collect values from unstored fields
-    HashSet<String> fields = new HashSet<String>(Arrays.asList(fieldNames));
+
+    
+    //Look in docvalues
+    FieldInfos fi = reader.getFieldInfos();
+    BytesRef br = new BytesRef();
+    for (String field : new ArrayList<String>(uncollectedFields)) {
+      DocValuesType dvt = fi.fieldInfo(field).getDocValuesType();
+      if(null == dvt) {
+        continue;
+      }
+      GrowableStringArray values = new GrowableStringArray();
+      switch(dvt) {
+      case BINARY:
+        reader.getBinaryDocValues(field).get(docNum, br);
+        values.append(0, "", br.utf8ToString());
+        uncollectedFields.remove(field);
+        break;
+      case NUMERIC:
+        long value = reader.getNumericDocValues(field).get(docNum);
+        values.append(0, "", Long.toString(value));
+        uncollectedFields.remove(field);
+        break;
+      case SORTED:
+        reader.getSortedDocValues(field).get(docNum, br);
+        values.append(0, "", br.utf8ToString());
+        uncollectedFields.remove(field);
+        break;
+      case SORTED_SET:
+        SortedSetDocValues sorted = reader.getSortedSetDocValues(field);
+        int i = 0;
+        sorted.setDocument(docNum);
+        long ord = 0;
+        while((ord = sorted.nextOrd()) != SortedSetDocValues.NO_MORE_ORDS) {
+          sorted.lookupOrd(ord, br);
+          values.append(i++, "|", br.utf8ToString());
+        }
+        uncollectedFields.remove(field);
+        break;
+      default:
+      }
+      if(values.size() > 0) {
+        res.getReconstructedFields().put(field, values);
+      }
+    }
+    
     // try to use term vectors if available
-    progress.maxValue = fieldNames.length;
+    progress.maxValue = uncollectedFields.size();
     progress.curValue = 0;
     progress.minValue = 0;
     TermsEnum te = null;
     DocsAndPositionsEnum dpe = null;
-    for (int i = 0; i < fieldNames.length; i++) {
-      Terms tvf = reader.getTermVector(docNum, fieldNames[i]);
+    DocsEnum de = null;
+    for (String field : new ArrayList<String>(uncollectedFields)) {
+      Terms tvf = reader.getTermVector(docNum, field);
       if (tvf != null) { // has vectors for this field
         te = tvf.iterator(te);
-        progress.message = "Checking term vectors for '" + fieldNames[i] + "' ...";
-        progress.curValue = i;
+        progress.message = "Checking term vectors for '" + field + "' ...";
+        progress.curValue++;
         setChanged();
         notifyObservers(progress);
         List<IntPair> vectors = TermVectorMapper.map(tvf, te, false, true);
         if (vectors != null) {
-          GrowableStringArray gsa = res.getReconstructedFields().get(fieldNames[i]);
+          GrowableStringArray gsa = res.getReconstructedFields().get(field);
           if (gsa == null) {
             gsa = new GrowableStringArray();
-            res.getReconstructedFields().put(fieldNames[i], gsa);
+            res.getReconstructedFields().put(field, gsa);
           }
           for (IntPair ip : vectors) {
             for (int m = 0; m < ip.positions.length; m++) {
               gsa.append(ip.positions[m], "|", ip.text);
             }
           }
-          fields.remove(fieldNames[i]); // got what we wanted
+          uncollectedFields.remove(field); // got what we wanted
         }
       }
     }
+    
     // this loop collects data only from left-over fields
     // not yet collected through term vectors
-    progress.maxValue = fields.size();
+    progress.maxValue = uncollectedFields.size();
     progress.curValue = 0;
     progress.minValue = 0;
-    for (String fld : fields) {
+    for (String fld : uncollectedFields) {
       progress.message = "Collecting terms in " + fld + " ...";
       progress.curValue++;
       setChanged();
@@ -149,28 +201,113 @@ public class DocReconstructor extends Observable {
       if (terms == null) { // no terms in this field
         continue;
       }
+      
+      te = terms.iterator(te);
+      boolean isIntField = true;
+      boolean isLongField = true;
+      boolean hasIntValue = false;
+      boolean hasLongValue = false;
+      while (te.next() != null) {
+        br = te.term();
+        try {
+          int shift = NumericUtils.getPrefixCodedLongShift(br);
+          NumericUtils.prefixCodedToLong(br);
+          if(shift == 0) {
+            de = te.docs(live, de);
+            if (de != null) {
+              if (de.advance(docNum) == docNum) {
+                hasLongValue = true;
+              }
+            }
+          }
+        } catch (NumberFormatException e) {
+          isLongField = false;
+        }
+        try {
+          int shift = NumericUtils.getPrefixCodedIntShift(br);
+          NumericUtils.prefixCodedToInt(br);
+          if(shift == 0) {
+            de = te.docs(live, de);
+            if (de != null) {
+              if (de.advance(docNum) == docNum) {
+                hasIntValue = true;
+              }
+            }
+          }
+        } catch (NumberFormatException e) {
+          isIntField = false;
+        }
+        if (!isLongField && !isIntField) {
+          break;
+        }
+      }
+      
+      isLongField &= hasLongValue;
+      isIntField &= hasIntValue;
+      
       te = terms.iterator(te);
       while (te.next() != null) {
         DocsAndPositionsEnum newDpe = te.docsAndPositions(live, dpe, 0);
-        if (newDpe == null) { // no position info for this field
-          break;
+        if (newDpe != null) {
+          dpe = newDpe;
+          int num = dpe.advance(docNum);
+          if (num != docNum) { // either greater than or NO_MORE_DOCS
+            continue; // no data for this term in this doc
+          }
+          String term = te.term().utf8ToString();
+          GrowableStringArray gsa = (GrowableStringArray)
+                res.getReconstructedFields().get(fld);
+          if (gsa == null) {
+            gsa = new GrowableStringArray();
+            res.getReconstructedFields().put(fld, gsa);
+          }
+          for (int k = 0; k < dpe.freq(); k++) {
+            int pos = dpe.nextPosition();
+            gsa.append(pos, "|", term);
+          }
+        } else {
+          DocsEnum newDe = te.docs(live, de, 0);
+          if(newDe != null) {
+            de = newDe;
+            int num = de.advance(docNum);
+            if (num != docNum) {
+              continue;
+            }
+            String value = null;
+            String altValue = null;
+            br = te.term();
+            
+            if(isLongField) {
+              if (NumericUtils.getPrefixCodedLongShift(br) > 0) {
+                continue;
+              }
+              long l = NumericUtils.prefixCodedToLong(br);
+              value = "<long>" + Long.toString(l);
+              altValue = "<double>" + Double.toString(NumericUtils.sortableLongToDouble(l));
+            } else if(isIntField) {
+              if (NumericUtils.getPrefixCodedIntShift(br) > 0) {
+                continue;
+              }
+              int i = NumericUtils.prefixCodedToInt(br);
+              value = "<int>" + Integer.toString(i);
+              altValue = "<float>" + Float.toString(NumericUtils.sortableIntToFloat(i));
+            }
+            if (null == value) {
+              value = br.utf8ToString();
+            }
+            GrowableStringArray gsa = (GrowableStringArray)
+                    res.getReconstructedFields().get(fld);
+            if (gsa == null) {
+              gsa = new GrowableStringArray();
+              res.getReconstructedFields().put(fld, gsa);
+            }
+            gsa.append(0, "|", value);
+            if(altValue != null) {
+              gsa.append(0, "|", altValue);
+            }
+          }
         }
-        dpe = newDpe;
-        int num = dpe.advance(docNum);
-        if (num != docNum) { // either greater than or NO_MORE_DOCS
-          continue; // no data for this term in this doc
-        }
-        String term = te.term().utf8ToString();
-        GrowableStringArray gsa = (GrowableStringArray)
-              res.getReconstructedFields().get(fld);
-        if (gsa == null) {
-          gsa = new GrowableStringArray();
-          res.getReconstructedFields().put(fld, gsa);
-        }
-        for (int k = 0; k < dpe.freq(); k++) {
-          int pos = dpe.nextPosition();
-          gsa.append(pos, "|", term);
-        }
+        
       }
     }
     progress.message = "Done.";
