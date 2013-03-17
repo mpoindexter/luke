@@ -111,6 +111,7 @@ public class AnalyzerToolPlugin extends LukePlugin {
       }
       TokenStream ts = analyzer.tokenStream("text", new StringReader(app
               .getString(inputText, "text")));
+      ts.reset();
       app.removeAll(resultsList);
 
       while (ts.incrementToken()) {
