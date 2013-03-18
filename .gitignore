@@ -1,7 +1,6 @@
 /bin
 /target
 /build
-/dist
 /.settings
 /.classpath
 /.project
